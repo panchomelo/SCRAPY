@@ -1,0 +1,86 @@
+[project]
+name = "scrapy"
+version = "0.1.0"
+description = "Modular scraping engine for RAG pipeline integration via n8n webhooks"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
+]
+keywords = ["scraping", "data-extraction", "rag", "n8n", "automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.25.0",
+    "httpx>=0.26.0",
+    "sqlalchemy>=2.0.25",
+    "aiosqlite>=0.19.0",
+    "playwright>=1.41.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.1.0",
+    "pdfplumber>=0.10.0",
+    "pandas>=2.1.0",
+    "openpyxl>=3.1.0",
+    "apify-client>=1.6.0",
+    "tenacity>=8.2.0",
+    "structlog>=24.1.0",
+    "typer[all]>=0.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.12.0",
+    "ruff>=0.1.0",
+    "mypy>=1.8.0",
+]
+
+[project.scripts]
+scrapy = "main:app"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+include = '\.pyi?$'
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+addopts = [
+    "--strict-markers",
+    "--cov=src",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+]
