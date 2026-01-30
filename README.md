@@ -1,1 +1,0 @@
-# Scrapy - Modular Scraping Engine
