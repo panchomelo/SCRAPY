@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.core.config import get_settings
 from src.core.engine import ScrapyEngine, close_engine
 from src.database.connection import close_db, init_db
+from src.models.jobs import HealthResponse
 from src.services.callback_service import CallbackService, close_callback_service
 from src.utils.logging import configure_logging, get_logger
 
@@ -115,19 +116,19 @@ def create_app() -> FastAPI:
     app.include_router(jobs_router, prefix="/api/v1")
 
     # Health check endpoint (no auth required)
-    @app.get("/health", tags=["Health"])
-    async def health_check() -> dict:
+    @app.get("/health", tags=["Health"], response_model=HealthResponse)
+    async def health_check() -> HealthResponse:
         """
         Health check endpoint.
 
         Returns basic application status. Used by load balancers
         and monitoring systems.
         """
-        return {
-            "status": "healthy",
-            "app": settings.app_name,
-            "version": "1.0.0",
-        }
+        return HealthResponse(
+            status="healthy",
+            version="1.0.0",
+            database="connected",
+        )
 
     # Root endpoint
     @app.get("/", tags=["Root"])

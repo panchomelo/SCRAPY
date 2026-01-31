@@ -1,0 +1,6 @@
+Collecting lxml_html_clean
+  Downloading lxml_html_clean-0.4.3-py3-none-any.whl.metadata (2.3 kB)
+Requirement already satisfied: lxml in ./.venv/lib/python3.12/site-packages (from lxml_html_clean) (6.0.2)
+Downloading lxml_html_clean-0.4.3-py3-none-any.whl (14 kB)
+Installing collected packages: lxml_html_clean
+Successfully installed lxml_html_clean-0.4.3

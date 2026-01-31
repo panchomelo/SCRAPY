@@ -96,8 +96,8 @@ class JobRepository:
         Raises:
             JobNotFoundError: If job doesn't exist
         """
-        result = await session.execute(select(ExtractionJob).where(ExtractionJob.id == job_id))
-        job = result.scalar_one_or_none()
+        stmt = select(ExtractionJob).where(ExtractionJob.id == job_id)
+        job = await session.scalar(stmt)
 
         if job is None:
             raise JobNotFoundError(job_id)
@@ -119,8 +119,8 @@ class JobRepository:
         Returns:
             ExtractionJob or None
         """
-        result = await session.execute(select(ExtractionJob).where(ExtractionJob.id == job_id))
-        return result.scalar_one_or_none()
+        stmt = select(ExtractionJob).where(ExtractionJob.id == job_id)
+        return await session.scalar(stmt)
 
     @staticmethod
     async def update_status(
@@ -230,15 +230,15 @@ class JobRepository:
         Returns:
             List of ExtractionJob ordered by created_at desc
         """
-        query = select(ExtractionJob).order_by(ExtractionJob.created_at.desc())
+        stmt = select(ExtractionJob).order_by(ExtractionJob.created_at.desc())
 
         if status is not None:
-            query = query.where(ExtractionJob.status == status)
+            stmt = stmt.where(ExtractionJob.status == status)
 
-        query = query.limit(limit).offset(offset)
+        stmt = stmt.limit(limit).offset(offset)
 
-        result = await session.execute(query)
-        return list(result.scalars().all())
+        result = await session.scalars(stmt)
+        return list(result.all())
 
     @staticmethod
     async def count_by_status(
@@ -315,15 +315,15 @@ class JobRepository:
         Returns:
             List of ExtractionJob ordered by created_at desc
         """
-        query = (
+        stmt = (
             select(ExtractionJob)
             .order_by(ExtractionJob.created_at.desc())
             .limit(limit)
             .offset(offset)
         )
 
-        result = await session.execute(query)
-        return list(result.scalars().all())
+        result = await session.scalars(stmt)
+        return list(result.all())
 
     @staticmethod
     async def delete(

@@ -10,9 +10,9 @@ Provides endpoints for:
 
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 
-from api.dependencies import ApiKeyDep, CallbackServiceDep, DbSessionDep, EngineDep
+from api.dependencies import CallbackServiceDep, DbSessionDep, EngineDep, verify_api_key
 from src.database.models import JobStatus
 from src.database.repository import JobRepository
 from src.models.jobs import (
@@ -27,7 +27,12 @@ from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-router = APIRouter(tags=["Jobs"])
+# Router with dependencies applied to all routes
+# This eliminates the need to add ApiKeyDep to each endpoint
+router = APIRouter(
+    tags=["Jobs"],
+    dependencies=[Depends(verify_api_key)],
+)
 
 
 @router.post(
@@ -43,7 +48,6 @@ async def create_extraction_job(
     session: DbSessionDep,
     engine: EngineDep,
     callback_service: CallbackServiceDep,
-    _api_key: ApiKeyDep,
 ) -> JobResponse:
     """
     Create and queue a new extraction job.
@@ -57,7 +61,6 @@ async def create_extraction_job(
         session: Database session
         engine: ScrapyEngine instance
         callback_service: Callback service instance
-        _api_key: Validated API key (dependency)
 
     Returns:
         JobResponse with job_id and pending status
@@ -99,7 +102,6 @@ async def create_extraction_job(
 async def get_job_status(
     job_id: str,
     session: DbSessionDep,
-    _api_key: ApiKeyDep,
 ) -> JobStatusResponse:
     """
     Get the status of an extraction job.
@@ -107,7 +109,6 @@ async def get_job_status(
     Args:
         job_id: UUID of the job to query
         session: Database session
-        _api_key: Validated API key
 
     Returns:
         JobStatusResponse with current status and result if completed
@@ -144,7 +145,6 @@ async def get_job_status(
 )
 async def list_jobs(
     session: DbSessionDep,
-    _api_key: ApiKeyDep,
     status_filter: Annotated[
         JobStatus | None,
         Query(alias="status", description="Filter by job status"),
@@ -217,14 +217,12 @@ async def list_jobs(
 )
 async def get_job_stats(
     session: DbSessionDep,
-    _api_key: ApiKeyDep,
 ) -> JobStatsResponse:
     """
     Get aggregate job statistics.
 
     Args:
         session: Database session
-        _api_key: Validated API key
 
     Returns:
         JobStatsResponse with counts by status
@@ -249,7 +247,6 @@ async def get_job_stats(
 async def delete_job(
     job_id: str,
     session: DbSessionDep,
-    _api_key: ApiKeyDep,
 ) -> None:
     """
     Cancel or delete an extraction job.
@@ -260,7 +257,6 @@ async def delete_job(
     Args:
         job_id: UUID of the job
         session: Database session
-        _api_key: Validated API key
 
     Raises:
         HTTPException: 404 if not found, 409 if processing

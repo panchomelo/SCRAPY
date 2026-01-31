@@ -3,6 +3,8 @@ Web content extractor using Playwright and BeautifulSoup.
 
 Handles JavaScript-rendered pages with smart content cleaning
 optimized for RAG consumption.
+
+Uses lxml as BeautifulSoup parser for performance (faster than html.parser).
 """
 
 import re
@@ -10,7 +12,8 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
-from playwright.async_api import Browser, Page, async_playwright
+from lxml_html_clean import Cleaner  # Standalone package since lxml 5.2.0
+from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from src.core.config import get_settings
@@ -57,17 +60,38 @@ DEFAULT_REMOVE_SELECTORS = [
     "#comments",
 ]
 
+# lxml Cleaner for robust HTML sanitization (per lxml docs best practices)
+# This removes scripts, styles, and dangerous elements at the lxml level
+# before BeautifulSoup further cleans the content
+_html_cleaner = Cleaner(
+    scripts=True,  # Remove <script> tags
+    javascript=True,  # Remove javascript: links
+    comments=True,  # Remove HTML comments
+    style=True,  # Remove <style> tags
+    inline_style=False,  # Keep inline styles (may contain layout info)
+    links=False,  # Keep <link> (may be needed for metadata)
+    meta=False,  # Keep <meta> (needed for metadata extraction)
+    page_structure=False,  # Keep <html>, <head>, <body>
+    processing_instructions=True,  # Remove <?...?>
+    remove_unknown_tags=False,  # Keep custom elements
+    safe_attrs_only=False,  # Keep all attributes
+    forms=False,  # Keep forms (may contain content)
+    annoying_tags=False,  # Keep <blink>, <marquee> (rare, but might have text)
+    kill_tags=["noscript", "iframe"],  # Completely remove these
+)
+
 
 class WebExtractor(BaseExtractor):
     """
     Extractor for web pages using Playwright + BeautifulSoup.
 
-    Uses Playwright to handle JavaScript-rendered content and
-    BeautifulSoup for HTML parsing and content cleaning.
+    Uses Playwright to handle JavaScript-rendered content,
+    lxml.html.clean for sanitization, and BeautifulSoup for
+    HTML parsing and content cleaning.
 
     Features:
     - JavaScript rendering with configurable wait conditions
-    - Smart content cleaning (removes ads, nav, scripts)
+    - Smart content cleaning (removes ads, nav, scripts via lxml + BS4)
     - Metadata extraction (title, description, language)
     - Link extraction (optional)
     - Screenshot capture (optional, for debugging)
@@ -79,26 +103,55 @@ class WebExtractor(BaseExtractor):
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config)
+        self._playwright: Playwright | None = None
         self._browser: Browser | None = None
+        self._context: BrowserContext | None = None
 
         # Parse config into typed object
         self._config = WebExtractionConfig(**self.config)
 
-    async def _get_browser(self) -> Browser:
-        """Get or create browser instance."""
+    async def _ensure_browser(self) -> BrowserContext:
+        """
+        Ensure browser and context are initialized.
+
+        Returns a browser context for page isolation.
+        """
+        settings = get_settings()
+
+        if self._playwright is None:
+            self._playwright = await async_playwright().start()
+
         if self._browser is None or not self._browser.is_connected():
-            settings = get_settings()
-            playwright = await async_playwright().start()
-            self._browser = await playwright.chromium.launch(
+            self._browser = await self._playwright.chromium.launch(
                 headless=settings.playwright_headless_resolved,
             )
-        return self._browser
+
+        if self._context is None:
+            self._context = await self._browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            )
+            # Set default timeout for all operations in this context
+            self._context.set_default_timeout(settings.playwright_timeout)
+
+        return self._context
 
     async def close(self) -> None:
-        """Close browser and release resources."""
+        """
+        Close browser context, browser, and Playwright.
+
+        Releases all resources in the correct order.
+        """
+        if self._context:
+            await self._context.close()
+            self._context = None
+
         if self._browser and self._browser.is_connected():
             await self._browser.close()
             self._browser = None
+
+        if self._playwright:
+            await self._playwright.stop()
+            self._playwright = None
 
     async def validate_source(self, source: str) -> None:
         """Validate URL format."""
@@ -135,17 +188,19 @@ class WebExtractor(BaseExtractor):
         self._log_start(source)
 
         settings = get_settings()
-        browser = await self._get_browser()
+        context = await self._ensure_browser()
         page: Page | None = None
 
         try:
-            page = await browser.new_page()
+            page = await context.new_page()
+
+            # Set navigation timeout specifically for goto
+            page.set_default_navigation_timeout(settings.playwright_timeout)
 
             # Navigate to page
             response = await page.goto(
                 source,
                 wait_until="domcontentloaded",
-                timeout=settings.playwright_timeout,
             )
 
             if response and response.status >= 400:
@@ -172,7 +227,20 @@ class WebExtractor(BaseExtractor):
             # Get HTML content
             html = await page.content()
 
-            # Parse and clean with BeautifulSoup
+            # Pre-clean with lxml Cleaner (removes scripts, comments, etc.)
+            # This is more robust than manual decompose() for security-critical elements
+            try:
+                from lxml import html as lxml_html
+
+                doc = lxml_html.document_fromstring(html)
+                _html_cleaner(doc)
+                html = lxml_html.tostring(doc, encoding="unicode")
+            except Exception:
+                # If lxml cleaning fails, continue with raw HTML
+                # BeautifulSoup will still do its own cleaning
+                pass
+
+            # Parse with BeautifulSoup using lxml parser (fastest)
             soup = BeautifulSoup(html, "lxml")
 
             # Extract metadata before cleaning
@@ -191,6 +259,15 @@ class WebExtractor(BaseExtractor):
             if self._config.extract_links:
                 links = self._extract_links(soup, source)
                 metadata.custom["links"] = links
+
+            # Capture screenshot if requested (useful for debugging)
+            screenshot_data = None
+            if self._config.screenshot:
+                screenshot_bytes = await page.screenshot(full_page=True)
+                import base64
+
+                screenshot_data = base64.b64encode(screenshot_bytes).decode("utf-8")
+                metadata.custom["screenshot"] = screenshot_data
 
             result = ExtractedContent(
                 source=ExtractionSource.WEB,
@@ -224,44 +301,49 @@ class WebExtractor(BaseExtractor):
                 await page.close()
 
     def _extract_metadata(self, soup: BeautifulSoup, url: str) -> Metadata:
-        """Extract metadata from HTML."""
-        # Title
+        """
+        Extract metadata from HTML.
+
+        Uses CSS selectors for cleaner, more maintainable code.
+        Falls back through multiple sources (meta tags, OpenGraph, etc.)
+        """
+        # Title: try multiple sources
         title = None
         if soup.title and soup.title.string:
             title = soup.title.string.strip()
 
-        # Description from meta tags
-        description = None
-        meta_desc = soup.find("meta", attrs={"name": "description"})
-        if meta_desc and meta_desc.get("content"):
-            description = meta_desc["content"].strip()
-
-        # OpenGraph fallbacks
+        # Fallback to OpenGraph title
         if not title:
-            og_title = soup.find("meta", property="og:title")
+            og_title = soup.select_one('meta[property="og:title"]')
             if og_title and og_title.get("content"):
                 title = og_title["content"].strip()
 
+        # Description: meta description or OpenGraph
+        description = None
+        meta_desc = soup.select_one('meta[name="description"]')
+        if meta_desc and meta_desc.get("content"):
+            description = meta_desc["content"].strip()
+
         if not description:
-            og_desc = soup.find("meta", property="og:description")
+            og_desc = soup.select_one('meta[property="og:description"]')
             if og_desc and og_desc.get("content"):
                 description = og_desc["content"].strip()
 
-        # Language
+        # Language from html tag
         language = None
-        html_tag = soup.find("html")
-        if html_tag and html_tag.get("lang"):
+        html_tag = soup.select_one("html[lang]")
+        if html_tag:
             language = html_tag["lang"][:2].lower()
 
         # Author
         author = None
-        meta_author = soup.find("meta", attrs={"name": "author"})
+        meta_author = soup.select_one('meta[name="author"]')
         if meta_author and meta_author.get("content"):
             author = meta_author["content"].strip()
 
         # Keywords as tags
-        tags = []
-        meta_keywords = soup.find("meta", attrs={"name": "keywords"})
+        tags: list[str] = []
+        meta_keywords = soup.select_one('meta[name="keywords"]')
         if meta_keywords and meta_keywords.get("content"):
             tags = [k.strip() for k in meta_keywords["content"].split(",") if k.strip()]
 
@@ -287,17 +369,19 @@ class WebExtractor(BaseExtractor):
         Extract clean text content from HTML.
 
         Preserves paragraph structure while removing excess whitespace.
+        Uses CSS selectors for finding main content area.
         """
-        # Try to find main content area
+        # Try to find main content area using CSS selectors
+        # Priority: <main> > <article> > div with content class > <body>
         main_content = (
-            soup.find("main")
-            or soup.find("article")
-            or soup.find("div", class_=re.compile(r"content|main|body", re.I))
-            or soup.find("body")
+            soup.select_one("main")
+            or soup.select_one("article")
+            or soup.select_one("div[class*='content']")
+            or soup.select_one("div[class*='main']")
+            or soup.select_one("div[class*='body']")
+            or soup.select_one("body")
+            or soup
         )
-
-        if not main_content:
-            main_content = soup
 
         # Get text with proper spacing
         text = main_content.get_text(separator="\n", strip=True)
@@ -320,11 +404,16 @@ class WebExtractor(BaseExtractor):
         return content.strip()
 
     def _extract_links(self, soup: BeautifulSoup, base_url: str) -> list[dict[str, str]]:
-        """Extract all links with their text."""
-        links = []
-        seen_urls = set()
+        """
+        Extract all links with their text.
 
-        for a in soup.find_all("a", href=True):
+        Uses CSS selector for consistency with rest of codebase.
+        """
+        links: list[dict[str, str]] = []
+        seen_urls: set[str] = set()
+
+        # Use CSS selector for links with href attribute
+        for a in soup.select("a[href]"):
             href = a.get("href", "")
             if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
                 continue

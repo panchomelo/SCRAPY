@@ -1,13 +1,20 @@
 """
 Apify service for social media scraping.
 
-Provides a client for Apify actors to extract content
+Provides an async client for Apify actors to extract content
 from platforms like Instagram, Twitter, LinkedIn, etc.
+
+Features:
+    - ApifyClientAsync for native async/await support
+    - ApifyApiError for granular error handling
+    - Configurable retry behavior with exponential backoff
+    - Automatic pagination with iterate_items()
 """
 
 from typing import Any
 
-from apify_client import ApifyClient
+from apify_client import ApifyClientAsync
+from apify_client.errors import ApifyApiError
 
 from src.core.config import get_settings
 from src.extractors.base import BaseExtractor, extraction_retry
@@ -38,11 +45,23 @@ APIFY_ACTORS = {
 }
 
 
+# Default retry configuration
+DEFAULT_MAX_RETRIES = 8
+DEFAULT_MIN_DELAY_MS = 500
+DEFAULT_TIMEOUT_SECS = 360
+
+
 class ApifyService:
     """
-    Service for interacting with Apify API.
+    Async service for interacting with Apify API.
 
-    Handles actor runs and result retrieval for social media scraping.
+    Uses ApifyClientAsync for native async/await support with automatic
+    retry handling and granular error management via ApifyApiError.
+
+    Attributes:
+        max_retries: Maximum retry attempts for failed requests.
+        min_delay_ms: Minimum delay between retries in milliseconds.
+        timeout_secs: Default request timeout in seconds.
 
     Example:
         >>> service = ApifyService()
@@ -52,7 +71,12 @@ class ApifyService:
         ... )
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        min_delay_ms: int = DEFAULT_MIN_DELAY_MS,
+        timeout_secs: int = DEFAULT_TIMEOUT_SECS,
+    ) -> None:
         settings = get_settings()
 
         if not settings.apify_api_token:
@@ -60,43 +84,59 @@ class ApifyService:
                 "APIFY_API_TOKEN not configured. Set it in .env to use social media extraction."
             )
 
-        self._client = ApifyClient(settings.apify_api_token)
+        self._client = ApifyClientAsync(
+            token=settings.apify_api_token,
+            max_retries=max_retries,
+            min_delay_between_retries_millis=min_delay_ms,
+            timeout_secs=timeout_secs,
+        )
         self._logger = get_logger(self.__class__.__name__)
+        self._timeout_secs = timeout_secs
 
     async def run_actor(
         self,
         actor_name: str,
         input_data: dict[str, Any],
-        timeout_secs: int = 300,
+        timeout_secs: int | None = None,
+        memory_mbytes: int | None = None,
     ) -> list[dict[str, Any]]:
         """
-        Run an Apify actor and return results.
+        Run an Apify actor asynchronously and return results.
+
+        Uses ApifyClientAsync.actor().call() for native async execution
+        with automatic retry handling on network errors, rate limits (429),
+        and server errors (5xx).
 
         Args:
             actor_name: Actor name (key from APIFY_ACTORS or full actor ID)
             input_data: Input data for the actor
-            timeout_secs: Maximum execution time in seconds
+            timeout_secs: Maximum execution time (defaults to client timeout)
+            memory_mbytes: Memory allocation for the actor run (optional)
 
         Returns:
-            List of result items from the actor
+            List of result items from the actor's default dataset
 
         Raises:
-            ApifyServiceError: If actor run fails
+            ApifyServiceError: If actor run fails or returns no data
         """
         # Resolve actor ID
         actor_id = APIFY_ACTORS.get(actor_name, actor_name)
+        effective_timeout = timeout_secs or self._timeout_secs
 
         self._logger.info(
             "Starting Apify actor",
             actor=actor_id,
             input_keys=list(input_data.keys()),
+            timeout_secs=effective_timeout,
         )
 
         try:
-            # Run the actor
-            run = self._client.actor(actor_id).call(
+            # Run the actor with async call()
+            actor_client = self._client.actor(actor_id)
+            run = await actor_client.call(
                 run_input=input_data,
-                timeout_secs=timeout_secs,
+                timeout_secs=effective_timeout,
+                memory_mbytes=memory_mbytes,
             )
 
             if not run:
@@ -104,6 +144,15 @@ class ApifyService:
                     "Actor run returned no result",
                     actor_id=actor_id,
                 )
+
+            # Log run status
+            run_status = run.get("status", "UNKNOWN")
+            self._logger.debug(
+                "Actor run completed",
+                actor=actor_id,
+                run_id=run.get("id"),
+                status=run_status,
+            )
 
             # Get results from default dataset
             dataset_id = run.get("defaultDatasetId")
@@ -114,16 +163,45 @@ class ApifyService:
                     run_id=run.get("id"),
                 )
 
-            items = list(self._client.dataset(dataset_id).iterate_items())
+            # Use async iterate_items() for automatic pagination
+            dataset_client = self._client.dataset(dataset_id)
+            items: list[dict[str, Any]] = []
+            async for item in dataset_client.iterate_items():
+                items.append(item)
 
             self._logger.info(
                 "Actor completed",
                 actor=actor_id,
                 items_count=len(items),
+                run_id=run.get("id"),
             )
 
             return items
 
+        except ApifyApiError as e:
+            # Granular handling of Apify-specific errors
+            self._logger.error(
+                "Apify API error",
+                actor=actor_id,
+                status_code=e.status_code,
+                error_type=e.type,
+                message=str(e),
+            )
+            if e.status_code == 404:
+                raise ApifyServiceError(
+                    f"Actor not found: {actor_id}",
+                    actor_id=actor_id,
+                ) from e
+            elif e.status_code == 429:
+                raise ApifyServiceError(
+                    "Apify rate limit exceeded",
+                    actor_id=actor_id,
+                ) from e
+            else:
+                raise ApifyServiceError(
+                    f"Apify API error ({e.status_code}): {e}",
+                    actor_id=actor_id,
+                ) from e
         except ApifyServiceError:
             raise
         except Exception as e:
@@ -140,6 +218,35 @@ class ApifyService:
     def get_available_actors(self) -> dict[str, str]:
         """Get dictionary of available actor names and IDs."""
         return APIFY_ACTORS.copy()
+
+    async def get_actor_info(self, actor_name: str) -> dict[str, Any] | None:
+        """
+        Get information about an actor.
+
+        Args:
+            actor_name: Actor name (key from APIFY_ACTORS or full actor ID)
+
+        Returns:
+            Actor info dict or None if not found
+        """
+        actor_id = APIFY_ACTORS.get(actor_name, actor_name)
+        try:
+            return await self._client.actor(actor_id).get()
+        except ApifyApiError as e:
+            if e.status_code == 404:
+                return None
+            raise
+
+    async def close(self) -> None:
+        """
+        Close the async client connection.
+
+        Should be called when done using the service to properly
+        release resources.
+        """
+        # ApifyClientAsync handles cleanup internally
+        # This method is provided for explicit resource management
+        pass
 
 
 class SocialMediaExtractor(BaseExtractor):

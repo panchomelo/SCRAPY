@@ -2,13 +2,20 @@
 File utilities for temporary file management and filename sanitization.
 
 Provides safe handling of downloaded files with automatic cleanup
-and cross-platform compatible filename generation.
+and cross-platform compatible filename generation using python-slugify.
+
+Features:
+    - Smart truncation with word_boundary and save_order
+    - Configurable stopwords filtering
+    - Custom character replacements
+    - Optional unicode preservation with allow_unicode
 """
 
 import tempfile
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Final
 from urllib.parse import unquote, urlparse
 
 from slugify import slugify
@@ -18,30 +25,60 @@ from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Default stopwords to remove from filenames (common articles/prepositions)
+DEFAULT_STOPWORDS: Final[tuple[str, ...]] = ()
+
+# Default character replacements (special chars to readable alternatives)
+DEFAULT_REPLACEMENTS: Final[tuple[tuple[str, str], ...]] = (
+    ("|", "or"),
+    ("%", "percent"),
+    ("&", "and"),
+    ("@", "at"),
+    ("+", "plus"),
+)
+
 
 def sanitize_filename(
     filename: str,
     max_length: int = 200,
     preserve_extension: bool = True,
+    *,
+    separator: str = "-",
+    lowercase: bool = True,
+    word_boundary: bool = True,
+    save_order: bool = True,
+    stopwords: Iterable[str] = DEFAULT_STOPWORDS,
+    replacements: Iterable[Iterable[str]] = DEFAULT_REPLACEMENTS,
+    allow_unicode: bool = False,
 ) -> str:
     """
     Convert a filename to a safe, filesystem-compatible format.
 
-    Handles problematic characters like :, &, spaces, accents, and emojis.
+    Uses python-slugify with modern options for smart truncation,
+    word boundary handling, and configurable character replacements.
 
     Args:
         filename: Original filename (e.g., "Reporte Final: Ventas & Marketing 2026.pdf")
         max_length: Maximum length for the resulting filename
         preserve_extension: Whether to preserve the file extension
+        separator: Separator between words (default: "-")
+        lowercase: Convert to lowercase (default: True)
+        word_boundary: Truncate at word boundaries for cleaner results (default: True)
+        save_order: Preserve original word order when truncating (default: True)
+        stopwords: Words to remove from filename (default: empty)
+        replacements: Character replacement pairs, e.g., [("&", "and")] (default: common symbols)
+        allow_unicode: Allow unicode characters in output (default: False)
 
     Returns:
-        Safe filename (e.g., "reporte-final-ventas-marketing-2026.pdf")
+        Safe filename (e.g., "reporte-final-ventas-and-marketing-2026.pdf")
 
     Example:
         >>> sanitize_filename("Reporte Final: Ventas & Marketing 2026.pdf")
-        'reporte-final-ventas-marketing-2026.pdf'
-        >>> sanitize_filename("données_été_2026.xlsx")
-        'donnees-ete-2026.xlsx'
+        'reporte-final-ventas-and-marketing-2026.pdf'
+        >>> sanitize_filename("données_été_2026.xlsx", allow_unicode=True)
+        'données-été-2026.xlsx'
+        >>> sanitize_filename("très_long_filename.pdf", max_length=15, word_boundary=True)
+        'tres-long.pdf'
     """
     if not filename:
         raise FileError("Filename cannot be empty", operation="sanitize")
@@ -57,12 +94,17 @@ def sanitize_filename(
             name, extension = parts
             extension = f".{extension.lower()}"
 
-    # Slugify the name part
+    # Slugify the name part with modern options
     safe_name = slugify(
         name,
         max_length=max_length - len(extension),
-        lowercase=True,
-        separator="-",
+        lowercase=lowercase,
+        separator=separator,
+        word_boundary=word_boundary,
+        save_order=save_order,
+        stopwords=stopwords,
+        replacements=replacements,
+        allow_unicode=allow_unicode,
     )
 
     # Ensure we have a valid name

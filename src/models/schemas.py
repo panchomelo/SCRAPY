@@ -5,11 +5,11 @@ Defines the unified output format for all extractors,
 optimized for RAG pipeline consumption.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ExtractionSource(str, Enum):
@@ -36,6 +36,8 @@ class Metadata(BaseModel):
 
     Provides context about the extraction for RAG indexing.
     """
+
+    model_config = ConfigDict(extra="ignore", validate_default=True)
 
     title: str | None = Field(
         default=None,
@@ -206,7 +208,7 @@ class ExtractedContent(BaseModel):
 
     # Timestamp
     extracted_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(UTC),
         description="UTC timestamp of extraction",
     )
 

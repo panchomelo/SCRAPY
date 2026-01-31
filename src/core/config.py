@@ -8,7 +8,7 @@ Validates configuration at startup to fail fast on misconfiguration.
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,13 +18,17 @@ class Settings(BaseSettings):
 
     All settings can be overridden via .env file or environment variables.
     Environment variables take precedence over .env file.
+
+    Env var prefix: SCRAPY_ (e.g., SCRAPY_API_KEY, SCRAPY_DEBUG)
     """
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        env_prefix="SCRAPY_",
         case_sensitive=False,
         extra="ignore",
+        validate_default=True,  # Validate default values at instantiation
     )
 
     # ===================
@@ -47,13 +51,16 @@ class Settings(BaseSettings):
         ...,  # Required
         min_length=32,
         description="API Key for webhook authentication (min 32 chars)",
+        validation_alias=AliasChoices("SCRAPY_API_KEY", "API_KEY"),  # Accept both
     )
 
     # ===================
     # Database
     # ===================
     database_url: str = Field(
-        default="sqlite+aiosqlite:///./scrapy.db", description="SQLAlchemy async database URL"
+        default="sqlite+aiosqlite:///./scrapy.db",
+        description="SQLAlchemy async database URL",
+        validation_alias=AliasChoices("SCRAPY_DATABASE_URL", "DATABASE_URL"),
     )
 
     # ===================
@@ -83,7 +90,9 @@ class Settings(BaseSettings):
     # Apify Configuration
     # ===================
     apify_api_token: str | None = Field(
-        default=None, description="Apify API token for social media scraping (optional)"
+        default=None,
+        description="Apify API token for social media scraping (optional)",
+        validation_alias=AliasChoices("SCRAPY_APIFY_API_TOKEN", "APIFY_API_TOKEN"),
     )
 
     # ===================

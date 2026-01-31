@@ -34,11 +34,13 @@ class TestWebExtractor:
     # Initialization Tests
     # ============================================================
 
+    @pytest.mark.unit
     def test_extractor_creation(self, extractor: WebExtractor) -> None:
         """Test that extractor is created correctly."""
         assert extractor is not None
         assert extractor.config is not None
 
+    @pytest.mark.unit
     def test_extractor_with_custom_config(self, extractor_with_config: WebExtractor) -> None:
         """Test extractor with custom configuration."""
         assert extractor_with_config.config.get("wait_for_selector") == "body"
@@ -48,25 +50,23 @@ class TestWebExtractor:
     # URL Validation Tests
     # ============================================================
 
-    @pytest.mark.asyncio
+    @pytest.mark.unit
     async def test_validate_valid_http_url(self, extractor: WebExtractor) -> None:
         """Test validation accepts http URLs."""
         await extractor.validate_source("http://example.com")
 
-    @pytest.mark.asyncio
+    @pytest.mark.unit
     async def test_validate_valid_https_url(self, extractor: WebExtractor) -> None:
         """Test validation accepts https URLs."""
         await extractor.validate_source("https://example.com")
 
-    @pytest.mark.asyncio
+    @pytest.mark.unit
     async def test_validate_invalid_url_scheme(self, extractor: WebExtractor) -> None:
         """Test validation rejects non-http/https URLs."""
-        with pytest.raises(WebExtractionError) as exc_info:
+        with pytest.raises(WebExtractionError, match=r"(?i)http"):
             await extractor.validate_source("ftp://example.com")
 
-        assert "http" in str(exc_info.value).lower()
-
-    @pytest.mark.asyncio
+    @pytest.mark.unit
     async def test_validate_invalid_url_format(self, extractor: WebExtractor) -> None:
         """Test validation rejects invalid URL formats."""
         with pytest.raises(WebExtractionError):
@@ -76,7 +76,6 @@ class TestWebExtractor:
     # Extraction Tests (Integration)
     # ============================================================
 
-    @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_extract_example_com(self, extractor: WebExtractor) -> None:
         """Test extraction from example.com (real network call)."""
@@ -93,7 +92,6 @@ class TestWebExtractor:
         finally:
             await extractor.close()
 
-    @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_extract_returns_metadata(self, extractor: WebExtractor) -> None:
         """Test that extraction returns proper metadata."""
@@ -107,7 +105,6 @@ class TestWebExtractor:
         finally:
             await extractor.close()
 
-    @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_extract_cleans_html(self, extractor: WebExtractor) -> None:
         """Test that extraction removes HTML tags."""
@@ -126,7 +123,6 @@ class TestWebExtractor:
     # Error Handling Tests
     # ============================================================
 
-    @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_extract_nonexistent_domain(self, extractor: WebExtractor) -> None:
         """Test extraction fails gracefully for non-existent domains."""
@@ -136,29 +132,25 @@ class TestWebExtractor:
         finally:
             await extractor.close()
 
-    @pytest.mark.asyncio
+    @pytest.mark.unit
     async def test_extract_empty_url(self, extractor: WebExtractor) -> None:
         """Test extraction fails for empty URL."""
-        # The extract method will raise after retries
-        # We just verify it raises some exception
-        try:
+        with pytest.raises(
+            (ExtractionError, WebExtractionError, ValueError), match=r"(?i)empty|invalid|url"
+        ):
             await extractor.extract("")
-            pytest.fail("Should have raised an exception")
-        except Exception as e:
-            # Verify the error message mentions empty
-            assert "empty" in str(e).lower() or isinstance(e, ExtractionError)
 
     # ============================================================
     # Resource Cleanup Tests
     # ============================================================
 
-    @pytest.mark.asyncio
+    @pytest.mark.unit
     async def test_extractor_close(self, extractor: WebExtractor) -> None:
         """Test that extractor closes without error."""
         await extractor.close()
         # Should not raise any exceptions
 
-    @pytest.mark.asyncio
+    @pytest.mark.unit
     async def test_extractor_double_close(self, extractor: WebExtractor) -> None:
         """Test that double close doesn't cause errors."""
         await extractor.close()
@@ -169,22 +161,26 @@ class TestWebExtractor:
 class TestWebExtractorConfig:
     """Tests for WebExtractor configuration options."""
 
+    @pytest.mark.unit
     def test_default_config(self) -> None:
         """Test default configuration values."""
         extractor = WebExtractor()
         # Default config should be an empty dict or have sensible defaults
         assert extractor.config is not None
 
+    @pytest.mark.unit
     def test_custom_timeout(self) -> None:
         """Test custom timeout configuration."""
         extractor = WebExtractor(config={"timeout": 60000})
         assert extractor.config.get("timeout") == 60000
 
+    @pytest.mark.unit
     def test_custom_wait_for_selector(self) -> None:
         """Test custom wait_for_selector configuration."""
         extractor = WebExtractor(config={"wait_for_selector": "#main-content"})
         assert extractor.config.get("wait_for_selector") == "#main-content"
 
+    @pytest.mark.unit
     def test_custom_user_agent(self) -> None:
         """Test custom user agent configuration."""
         extractor = WebExtractor(config={"user_agent": "CustomBot/1.0"})

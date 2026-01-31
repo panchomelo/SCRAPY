@@ -9,11 +9,13 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from tenacity import (
-    before_sleep_log,
+    RetryCallState,
+    before_log,
     retry,
     retry_if_exception_type,
     stop_after_attempt,
-    wait_exponential,
+    stop_after_delay,
+    wait_random_exponential,
 )
 
 from src.core.config import get_settings
@@ -24,36 +26,76 @@ from src.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _custom_before_sleep(retry_state: RetryCallState) -> None:
+    """
+    Custom before_sleep callback with detailed logging.
+
+    Logs retry attempt information including attempt number,
+    time elapsed, and the exception that triggered the retry.
+
+    Args:
+        retry_state: The current retry state with statistics
+    """
+    exception = retry_state.outcome.exception() if retry_state.outcome else None
+    logger.info(
+        "Retrying after failure",
+        function=getattr(retry_state.fn, "__name__", str(retry_state.fn)),
+        attempt=retry_state.attempt_number,
+        elapsed=f"{retry_state.seconds_since_start:.2f}s",
+        next_wait=f"{retry_state.next_action.sleep:.2f}s" if retry_state.next_action else "N/A",
+        error=str(exception) if exception else "unknown",
+    )
+
+
 def create_retry_decorator(
     max_attempts: int = 3,
+    max_delay: float = 60,
     min_wait: float = 1,
     max_wait: float = 10,
     retry_exceptions: tuple[type[Exception], ...] = (ExtractionError,),
 ):
     """
-    Create a Tenacity retry decorator with configurable parameters.
+    Create a Tenacity retry decorator with modern configuration.
+
+    Uses wait_random_exponential (jitter) to prevent thundering herd
+    and combined stop conditions (attempts AND total delay).
 
     Args:
         max_attempts: Maximum number of retry attempts
+        max_delay: Maximum total time to spend retrying (seconds)
         min_wait: Minimum wait time between retries (seconds)
         max_wait: Maximum wait time between retries (seconds)
         retry_exceptions: Exception types that trigger a retry
 
     Returns:
-        Configured retry decorator
+        Configured retry decorator with modern Tenacity features
+
+    Example:
+        >>> @create_retry_decorator(max_attempts=5, max_delay=30)
+        ... async def my_flaky_function():
+        ...     pass
     """
     return retry(
-        stop=stop_after_attempt(max_attempts),
-        wait=wait_exponential(multiplier=1, min=min_wait, max=max_wait),
+        # Combined stop: whichever comes first
+        stop=(stop_after_attempt(max_attempts) | stop_after_delay(max_delay)),
+        # Random exponential backoff (jitter) to prevent thundering herd
+        wait=wait_random_exponential(multiplier=1, min=min_wait, max=max_wait),
+        # Retry on specific exception types
         retry=retry_if_exception_type(retry_exceptions),
-        before_sleep=before_sleep_log(logger, log_level=20),  # INFO level
+        # Custom before_sleep with detailed logging
+        before_sleep=_custom_before_sleep,
+        # Log before each attempt (DEBUG level)
+        before=before_log(logger, log_level=10),
+        # Reraise the original exception (not RetryError)
         reraise=True,
     )
 
 
 # Default retry decorator for extraction operations
+# Uses jitter to prevent thundering herd on shared resources
 extraction_retry = create_retry_decorator(
     max_attempts=3,
+    max_delay=60,  # Total retry budget: 60 seconds
     min_wait=1,
     max_wait=10,
     retry_exceptions=(ExtractionError, TimeoutError, ConnectionError),

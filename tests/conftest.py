@@ -2,10 +2,30 @@
 Pytest configuration and fixtures.
 
 Provides shared fixtures for testing the Scrapy Engine.
+
+Modern pytest-asyncio configuration (v0.23+):
+
+Configuration in pyproject.toml:
+    asyncio_mode = "auto"
+        - Auto-detects async test functions
+        - No need for @pytest.mark.asyncio decorator
+        - Takes ownership of async fixtures
+
+    asyncio_default_fixture_loop_scope = "session"
+        - Async fixtures share session-scoped event loop by default
+        - Can override per-fixture with loop_scope parameter
+
+    asyncio_default_test_loop_scope = "function"
+        - Each test gets isolated event loop by default
+        - Can override with @pytest.mark.asyncio(loop_scope="module")
+
+Fixture scoping patterns:
+    @pytest_asyncio.fixture(loop_scope="session", scope="function")
+        - loop_scope: which event loop to run in (session = shared)
+        - scope: how long to cache fixture value (function = fresh each test)
 """
 
-import asyncio
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator
 from typing import Any
 
 import pytest
@@ -17,19 +37,6 @@ from sqlalchemy.pool import StaticPool
 from src.core.config import Settings
 from src.core.engine import ScrapyEngine
 from src.database.models import Base
-
-# ============================================================
-# Event Loop Configuration
-# ============================================================
-
-
-@pytest.fixture(scope="session")
-def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
-    """Create an event loop for the test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
 
 # ============================================================
 # Settings Fixtures
@@ -55,9 +62,14 @@ def test_settings() -> Settings:
 # ============================================================
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope="session", scope="function")
 async def test_engine(test_settings: Settings) -> AsyncGenerator[Any, None]:
-    """Create a test database engine with in-memory SQLite."""
+    """
+    Create a test database engine with in-memory SQLite.
+
+    Uses session-scoped event loop but function-scoped caching
+    for test isolation.
+    """
     engine = create_async_engine(
         test_settings.database_url,
         echo=False,
@@ -78,9 +90,9 @@ async def test_engine(test_settings: Settings) -> AsyncGenerator[Any, None]:
     await engine.dispose()
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope="session", scope="function")
 async def test_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
-    """Create a test database session."""
+    """Create a test database session with automatic rollback."""
     async_session = sessionmaker(
         test_engine,
         class_=AsyncSession,
@@ -97,13 +109,20 @@ async def test_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
 # ============================================================
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope="session", scope="function")
 async def scrapy_engine() -> AsyncGenerator[ScrapyEngine, None]:
-    """Create a ScrapyEngine for testing."""
+    """
+    Create a ScrapyEngine for testing.
+
+    Ensures proper initialization and cleanup of Playwright resources.
+    Uses session-scoped loop for efficient Playwright reuse.
+    """
     engine = ScrapyEngine()
     await engine.initialize()
-    yield engine
-    await engine.shutdown()
+    try:
+        yield engine
+    finally:
+        await engine.shutdown()
 
 
 # ============================================================
@@ -161,7 +180,7 @@ def invalid_api_key() -> str:
 # ============================================================
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope="session", scope="function")
 async def test_client():
     """
     Create a test client for the FastAPI app.

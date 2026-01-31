@@ -23,6 +23,11 @@ from src.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+# ===================
+# Authentication
+# ===================
+
+
 async def verify_api_key(
     x_api_key: Annotated[str | None, Header()] = None,
     settings: Settings = Depends(get_settings),
@@ -62,11 +67,17 @@ async def verify_api_key(
     return x_api_key
 
 
+# ===================
+# Database
+# ===================
+
+
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """
     Dependency for database session.
 
     Creates a new session for each request and handles cleanup.
+    Follows FastAPI best practices for exception handling in dependencies with yield.
 
     Yields:
         AsyncSession: Database session
@@ -76,11 +87,21 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
+        except HTTPException:
+            # Re-raise HTTP exceptions without rollback
+            # (validation errors shouldn't affect the session)
+            await session.rollback()
+            raise
         except Exception:
             await session.rollback()
             raise
         finally:
             await session.close()
+
+
+# ===================
+# Application State
+# ===================
 
 
 async def get_engine(request: Request) -> ScrapyEngine:
@@ -113,7 +134,12 @@ async def get_callback_service(request: Request) -> CallbackService:
     return request.app.state.callback_service
 
 
-# Type aliases for cleaner route signatures
+# ===================
+# Type Aliases (Annotated Dependencies)
+# ===================
+# Using Annotated pattern for cleaner route signatures
+# This is the modern FastAPI approach (recommended over direct Depends in params)
+
 ApiKeyDep = Annotated[str, Depends(verify_api_key)]
 DbSessionDep = Annotated[AsyncSession, Depends(get_db_session)]
 EngineDep = Annotated[ScrapyEngine, Depends(get_engine)]

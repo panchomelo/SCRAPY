@@ -5,11 +5,11 @@ Defines request/response models for the webhook API
 and callback payloads for the RAG service.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Self
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 
 class JobStatus(str, Enum):
@@ -49,6 +49,8 @@ class JobRequest(BaseModel):
         }
     """
 
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
     callback_url: HttpUrl = Field(
         description="Webhook URL to receive extraction results",
     )
@@ -72,13 +74,8 @@ class JobRequest(BaseModel):
         description="Source-specific extraction configuration",
     )
 
-    @field_validator("url", "file_content")
-    @classmethod
-    def validate_source_data(cls, v: str | None, info) -> str | None:
-        """Ensure at least one data source is provided."""
-        return v
-
-    def model_post_init(self, __context: Any) -> None:
+    @model_validator(mode="after")
+    def validate_source_requirements(self) -> Self:
         """Validate that appropriate fields are set for source type."""
         if self.source in (ExtractionSource.WEB, ExtractionSource.SOCIAL):
             if not self.url:
@@ -88,6 +85,7 @@ class JobRequest(BaseModel):
                 raise ValueError(
                     f"file_content or url is required for {self.source.value} extraction"
                 )
+        return self
 
 
 class JobResponse(BaseModel):
@@ -103,6 +101,8 @@ class JobResponse(BaseModel):
             "message": "Job queued successfully. Results will be sent to callback URL."
         }
     """
+
+    model_config = ConfigDict(extra="ignore")
 
     job_id: str = Field(
         description="Unique job identifier (UUID)",
@@ -203,6 +203,8 @@ class CallbackPayload(BaseModel):
         }
     """
 
+    model_config = ConfigDict(extra="ignore")
+
     job_id: str = Field(
         description="Unique job identifier",
     )
@@ -218,7 +220,7 @@ class CallbackPayload(BaseModel):
         description="Error message if job failed",
     )
     completed_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(UTC),
         description="Completion timestamp",
     )
 
@@ -227,7 +229,7 @@ class CallbackPayload(BaseModel):
         cls,
         job_id: str,
         result: dict[str, Any],
-    ) -> "CallbackPayload":
+    ) -> Self:
         """Create a success callback payload."""
         return cls(
             job_id=job_id,
@@ -241,7 +243,7 @@ class CallbackPayload(BaseModel):
         cls,
         job_id: str,
         error: str,
-    ) -> "CallbackPayload":
+    ) -> Self:
         """Create a failure callback payload."""
         return cls(
             job_id=job_id,

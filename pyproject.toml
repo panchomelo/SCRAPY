@@ -28,6 +28,7 @@ dependencies = [
     "playwright>=1.41.0",
     "beautifulsoup4>=4.12.0",
     "lxml>=5.1.0",
+    "lxml_html_clean>=0.1.0",  # lxml.html.clean separated since lxml 5.2.0
     "pdfplumber>=0.10.0",
     "pandas>=2.1.0",
     "openpyxl>=3.1.0",
@@ -73,14 +74,33 @@ disallow_untyped_defs = true
 plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
+minversion = "7.4"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+# Modern pytest-asyncio configuration (v0.23+)
+# - asyncio_mode="auto": auto-detects async tests, no need for @pytest.mark.asyncio
+# - asyncio_default_fixture_loop_scope: event loop scope for async fixtures
+# - asyncio_default_test_loop_scope: event loop scope for async tests
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "function"
+# Custom markers - use with -m flag (e.g., pytest -m "not integration")
+markers = [
+    "integration: marks tests as integration tests (may require network)",
+    "slow: marks tests as slow running",
+    "unit: marks tests as unit tests (fast, no I/O)",
+]
+# Best practice: strict mode catches typos in markers and config
 addopts = [
-    "--strict-markers",
-    "--cov=src",
-    "--cov-report=term-missing",
-    "--cov-report=html",
+    "-ra",                  # Show extra test summary for all except passed
+    "--strict-markers",     # Error on unknown markers
+    "--strict-config",      # Error on unknown config keys
+    "--tb=short",          # Shorter traceback format
+]
+filterwarnings = [
+    "ignore::pytest.PytestUnraisableExceptionWarning",
+    # Ignore deprecation warnings from third-party libs
+    "ignore::DeprecationWarning:playwright.*",
 ]

@@ -16,11 +16,18 @@ from sqlalchemy import (
     Text,
     func,
 )
+from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
-class Base(DeclarativeBase):
-    """Base class for all ORM models."""
+class Base(AsyncAttrs, DeclarativeBase):
+    """
+    Base class for all ORM models.
+
+    Includes AsyncAttrs mixin for async lazy-loading support.
+    This allows using `await obj.awaitable_attrs.relationship`
+    to access relationships in async context.
+    """
 
     pass
 

@@ -3,11 +3,16 @@ Async database connection management using SQLAlchemy 2.0 with aiosqlite.
 
 Provides session factory and database initialization utilities.
 Designed for SQLite with easy migration path to PostgreSQL.
+
+aiosqlite is used as the async driver for SQLite, but accessed through
+SQLAlchemy's async API for ORM benefits, type safety, and future
+migration path to PostgreSQL if needed.
 """
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -33,6 +38,11 @@ def get_engine() -> AsyncEngine:
     Uses StaticPool for SQLite to handle async properly.
     The engine is created once and reused across the application.
 
+    SQLite-specific optimizations:
+    - check_same_thread=False: Required for async (aiosqlite handles thread safety)
+    - StaticPool: Single connection for SQLite (no connection pooling needed)
+    - WAL mode: Better concurrency for read-heavy workloads (set via event)
+
     Returns:
         AsyncEngine: SQLAlchemy async engine instance
     """
@@ -41,22 +51,44 @@ def get_engine() -> AsyncEngine:
     if _engine is None:
         settings = get_settings()
 
-        # SQLite-specific configuration
-        connect_args = {}
+        # SQLite-specific configuration for aiosqlite driver
+        connect_args: dict[str, bool | int] = {}
         poolclass = None
+        pool_pre_ping = True  # Verify connections before use
 
         if settings.database_url.startswith("sqlite"):
-            # SQLite needs check_same_thread=False for async
-            connect_args = {"check_same_thread": False}
+            # Required for async: aiosqlite handles thread safety internally
+            connect_args = {
+                "check_same_thread": False,
+                "timeout": 30,  # Connection timeout in seconds
+            }
             # StaticPool ensures single connection for SQLite
+            # (SQLite doesn't benefit from connection pooling)
             poolclass = StaticPool
+            pool_pre_ping = False  # Not needed with StaticPool
 
         _engine = create_async_engine(
             settings.database_url,
             echo=settings.debug,  # Log SQL statements in debug mode
             connect_args=connect_args,
             poolclass=poolclass,
+            pool_pre_ping=pool_pre_ping,
         )
+
+        # SQLite optimizations via event listener (aiosqlite best practices)
+        if settings.database_url.startswith("sqlite"):
+
+            @event.listens_for(_engine.sync_engine, "connect")
+            def _set_sqlite_pragma(dbapi_conn, connection_record) -> None:  # noqa: ANN001
+                """Configure SQLite for better async performance."""
+                cursor = dbapi_conn.cursor()
+                # WAL mode: Better concurrency for read-heavy workloads
+                cursor.execute("PRAGMA journal_mode=WAL")
+                # Foreign keys: Enforce referential integrity
+                cursor.execute("PRAGMA foreign_keys=ON")
+                # Synchronous NORMAL: Good balance of safety and speed
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.close()
 
         logger.info(
             "Database engine created",
